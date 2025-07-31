@@ -128,6 +128,98 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Payment Request API
+app.post('/api/payment-request', async (req, res) => {
+  try {
+    const { upiId, amount, payeeName, note } = req.body;
+
+    // Validation
+    if (!upiId || !amount) {
+      return res.status(400).json({ 
+        error: 'UPI ID and amount are required' 
+      });
+    }
+
+    if (typeof amount !== 'number' || amount <= 0) {
+      return res.status(400).json({ 
+        error: 'Amount must be a positive number' 
+      });
+    }
+
+    const paymentRequestsCollection = db.collection('paymentRequests');
+
+    // Create payment request document
+    const newPaymentRequest = {
+      upiId,
+      amount,
+      payeeName: payeeName || '',
+      note: note || '',
+      requesterId: 'anonymous', // For now, will be updated when we add proper auth
+      status: 'pending',
+      createdAt: new Date()
+    };
+
+    const result = await paymentRequestsCollection.insertOne(newPaymentRequest);
+
+    // Return success response
+    res.status(201).json({
+      message: 'Payment request created successfully',
+      paymentRequest: {
+        id: result.insertedId.toString(),
+        upiId: newPaymentRequest.upiId,
+        amount: newPaymentRequest.amount,
+        payeeName: newPaymentRequest.payeeName,
+        note: newPaymentRequest.note,
+        requesterId: newPaymentRequest.requesterId,
+        status: newPaymentRequest.status,
+        createdAt: newPaymentRequest.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Payment request error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Get all payment requests API
+app.get('/api/payment-requests', async (req, res) => {
+  try {
+    const paymentRequestsCollection = db.collection('paymentRequests');
+    
+    // Get all pending payment requests, sorted by creation date (newest first)
+    const paymentRequests = await paymentRequestsCollection
+      .find({ status: 'pending' })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Format the response
+    const formattedRequests = paymentRequests.map(request => ({
+      id: request._id.toString(),
+      upiId: request.upiId,
+      amount: request.amount,
+      payeeName: request.payeeName,
+      note: request.note,
+      requesterId: request.requesterId,
+      status: request.status,
+      createdAt: request.createdAt
+    }));
+
+    res.json({
+      message: 'Payment requests retrieved successfully',
+      paymentRequests: formattedRequests
+    });
+
+  } catch (error) {
+    console.error('Get payment requests error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
