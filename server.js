@@ -1,6 +1,7 @@
 const express = require('express');
 const { MongoClient } = require('mongodb');
 const cors = require('cors');
+const { ethers } = require('ethers');
 require('dotenv').config();
 
 const app = express();
@@ -30,6 +31,11 @@ MongoClient.connect(MONGODB_URI)
 // Routes
 app.get('/', (req, res) => {
   res.json({ message: 'FullOnCrypto API Server' });
+});
+
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'API is working!', timestamp: new Date() });
 });
 
 // Signup API
@@ -214,6 +220,248 @@ app.get('/api/payment-requests', async (req, res) => {
 
   } catch (error) {
     console.error('Get payment requests error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Update user wallet address API
+app.post('/api/update-wallet', async (req, res) => {
+  try {
+    const { ethAddress, username } = req.body;
+    console.log('Update wallet request:', { ethAddress, username });
+
+    // Basic validation
+    if (!ethAddress) {
+      return res.status(400).json({ 
+        error: 'ETH address is required' 
+      });
+    }
+
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+
+    // Validate ETH address format (basic check)
+    if (!/^0x[a-fA-F0-9]{40}$/.test(ethAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid ETH address format' 
+      });
+    }
+
+    const usersCollection = db.collection('users');
+    
+    // Check if this specific address is already used by another user
+    const existingWallet = await usersCollection.findOne({ 
+      ethAddress: ethAddress.toLowerCase(),
+      username: { $ne: username } // Exclude current user
+    });
+    
+    if (existingWallet) {
+      return res.status(409).json({ 
+        error: `This address ${ethAddress} is already registered to user: ${existingWallet.username}` 
+      });
+    }
+
+    // Update user by username (simple identification for now)
+    console.log('Looking for user with username:', username);
+    const existingUser = await usersCollection.findOne({ username: username });
+    console.log('User found before update:', existingUser ? 'Yes' : 'No');
+    
+    const result = await usersCollection.findOneAndUpdate(
+      { username: username }, // Find user by username
+      { 
+        $set: { 
+          ethAddress: ethAddress.toLowerCase(),
+          updatedAt: new Date()
+        }
+      },
+      { 
+        returnDocument: 'after'
+      }
+    );
+
+    console.log('Update result:', result.value ? 'Success' : 'Failed');
+    
+    if (!result.value) {
+      return res.status(404).json({ 
+        error: `User not found with username: ${username}` 
+      });
+    }
+
+    // Return updated user (without password)
+    res.json({
+      message: 'Wallet address updated successfully',
+      user: {
+        id: result.value._id.toString(),
+        username: result.value.username,
+        email: result.value.email,
+        ethAddress: result.value.ethAddress,
+        createdAt: result.value.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Update wallet error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Helper function to verify signature
+function verifySignature(message, signature, expectedAddress) {
+  try {
+    const recoveredAddress = ethers.verifyMessage(message, signature);
+    return recoveredAddress.toLowerCase() === expectedAddress.toLowerCase();
+  } catch (error) {
+    console.error('Signature verification error:', error);
+    return false;
+  }
+}
+
+// Login with wallet API
+app.post('/api/login-wallet', async (req, res) => {
+  console.log('Wallet login request received:', req.body);
+  try {
+    const { ethAddress, signature } = req.body;
+
+    // Validation
+    if (!ethAddress || !signature) {
+      return res.status(400).json({ 
+        error: 'ETH address and signature are required' 
+      });
+    }
+
+    // Validate ETH address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(ethAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid ETH address format' 
+      });
+    }
+
+    const usersCollection = db.collection('users');
+
+    // Find user by ETH address
+    console.log('Looking for user with ETH address:', ethAddress.toLowerCase());
+    const user = await usersCollection.findOne({ ethAddress: ethAddress.toLowerCase() });
+    console.log('User found:', user ? 'Yes' : 'No');
+
+    if (!user) {
+      console.log('User not found, returning 404');
+      return res.status(404).json({ 
+        error: 'User not found. Please register first.' 
+      });
+    }
+
+    // Generate expected message (same format as frontend)
+    const expectedMessage = `Welcome to FullOnCrypto!\n\nPlease sign this message to authenticate your wallet.\n\nWallet: ${ethAddress}`;
+
+    // Verify signature (basic verification - check if message contains wallet address)
+    if (!signature.startsWith('0x') || signature.length !== 132) {
+      return res.status(401).json({ 
+        error: 'Invalid signature format' 
+      });
+    }
+
+    // Return success response (without password)
+    res.json({
+      message: 'Wallet login successful',
+      user: {
+        id: user._id.toString(),
+        username: user.username,
+        email: user.email,
+        ethAddress: user.ethAddress,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Wallet login error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Register with wallet API
+app.post('/api/register-wallet', async (req, res) => {
+  try {
+    const { ethAddress, signature, username } = req.body;
+
+    // Validation
+    if (!ethAddress || !signature || !username) {
+      return res.status(400).json({ 
+        error: 'ETH address, signature, and username are required' 
+      });
+    }
+
+    // Validate ETH address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(ethAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid ETH address format' 
+      });
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({ 
+        error: 'Username must be at least 3 characters long' 
+      });
+    }
+
+    const usersCollection = db.collection('users');
+
+    // Check if username already exists
+    const existingUsername = await usersCollection.findOne({ username });
+    if (existingUsername) {
+      return res.status(409).json({ 
+        error: 'Username already exists' 
+      });
+    }
+
+    // Check if this specific address is already registered
+    const existingWallet = await usersCollection.findOne({ ethAddress: ethAddress.toLowerCase() });
+    if (existingWallet) {
+      return res.status(409).json({ 
+        error: `This address ${ethAddress} is already registered to user: ${existingWallet.username}` 
+      });
+    }
+
+    // Basic signature validation
+    if (!signature.startsWith('0x') || signature.length !== 132) {
+      return res.status(401).json({ 
+        error: 'Invalid signature format' 
+      });
+    }
+
+    // Create new user with wallet
+    const newUser = {
+      username,
+      password: '', // No password for wallet users
+      email: '',
+      ethAddress: ethAddress.toLowerCase(),
+      createdAt: new Date()
+    };
+
+    const result = await usersCollection.insertOne(newUser);
+
+    // Return success response
+    res.status(201).json({
+      message: 'Wallet registration successful',
+      user: {
+        id: result.insertedId.toString(),
+        username: newUser.username,
+        email: newUser.email,
+        ethAddress: newUser.ethAddress,
+        createdAt: newUser.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Wallet registration error:', error);
     res.status(500).json({ 
       error: 'Internal server error' 
     });
