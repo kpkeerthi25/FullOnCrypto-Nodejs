@@ -38,6 +38,16 @@ app.get('/api/test', (req, res) => {
   res.json({ message: 'API is working!', timestamp: new Date() });
 });
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    message: 'FullOnCrypto API Server is running',
+    timestamp: new Date(),
+    mongodb: db ? 'connected' : 'disconnected'
+  });
+});
+
 // Signup API
 app.post('/api/signup', async (req, res) => {
   try {
@@ -137,7 +147,7 @@ app.post('/api/login', async (req, res) => {
 // Payment Request API
 app.post('/api/payment-request', async (req, res) => {
   try {
-    const { upiId, amount, payeeName, note } = req.body;
+    const { upiId, amount, payeeName, note, contractRequestId, walletAddress, daiAmount, ethFee } = req.body;
 
     // Validation
     if (!upiId || !amount) {
@@ -153,6 +163,7 @@ app.post('/api/payment-request', async (req, res) => {
     }
 
     const paymentRequestsCollection = db.collection('paymentRequests');
+    const upiIndexCollection = db.collection('upiIndex'); // New collection for contract ID to UPI ID mapping
 
     // Create payment request document
     const newPaymentRequest = {
@@ -160,12 +171,34 @@ app.post('/api/payment-request', async (req, res) => {
       amount,
       payeeName: payeeName || '',
       note: note || '',
-      requesterId: 'anonymous', // For now, will be updated when we add proper auth
+      contractRequestId: contractRequestId || null, // Link to smart contract request
+      walletAddress: walletAddress || '',
+      daiAmount: daiAmount || 0,
+      ethFee: ethFee || 0,
+      requesterId: walletAddress || 'anonymous',
       status: 'pending',
       createdAt: new Date()
     };
 
     const result = await paymentRequestsCollection.insertOne(newPaymentRequest);
+
+    // If contractRequestId is provided, create index mapping for quick UPI ID lookup
+    if (contractRequestId) {
+      const upiIndexDoc = {
+        contractRequestId: contractRequestId,
+        upiId: upiId,
+        payeeName: payeeName || '',
+        note: note || '',
+        createdAt: new Date()
+      };
+      
+      // Use upsert to handle cases where the same contract ID might be used multiple times
+      await upiIndexCollection.replaceOne(
+        { contractRequestId: contractRequestId },
+        upiIndexDoc,
+        { upsert: true }
+      );
+    }
 
     // Return success response
     res.status(201).json({
@@ -176,6 +209,10 @@ app.post('/api/payment-request', async (req, res) => {
         amount: newPaymentRequest.amount,
         payeeName: newPaymentRequest.payeeName,
         note: newPaymentRequest.note,
+        contractRequestId: newPaymentRequest.contractRequestId,
+        walletAddress: newPaymentRequest.walletAddress,
+        daiAmount: newPaymentRequest.daiAmount,
+        ethFee: newPaymentRequest.ethFee,
         requesterId: newPaymentRequest.requesterId,
         status: newPaymentRequest.status,
         createdAt: newPaymentRequest.createdAt
@@ -184,6 +221,99 @@ app.post('/api/payment-request', async (req, res) => {
 
   } catch (error) {
     console.error('Payment request error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Get UPI ID by contract ID API (optimized with index)
+app.get('/api/upi-id/contract/:contractRequestId', async (req, res) => {
+  try {
+    const { contractRequestId } = req.params;
+
+    if (!contractRequestId) {
+      return res.status(400).json({ 
+        error: 'Contract request ID is required' 
+      });
+    }
+
+    const upiIndexCollection = db.collection('upiIndex');
+    
+    // Find UPI ID by contract request ID using the optimized index
+    const upiIndexEntry = await upiIndexCollection.findOne({ 
+      contractRequestId: contractRequestId 
+    });
+
+    if (!upiIndexEntry) {
+      return res.status(404).json({ 
+        error: 'UPI ID not found for the given contract ID' 
+      });
+    }
+
+    res.json({
+      message: 'UPI ID retrieved successfully',
+      contractRequestId: contractRequestId,
+      upiId: upiIndexEntry.upiId,
+      payeeName: upiIndexEntry.payeeName,
+      note: upiIndexEntry.note
+    });
+
+  } catch (error) {
+    console.error('Get UPI ID by contract ID error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Get payment request by contract ID API
+app.get('/api/payment-request/contract/:contractRequestId', async (req, res) => {
+  try {
+    const { contractRequestId } = req.params;
+
+    if (!contractRequestId) {
+      return res.status(400).json({ 
+        error: 'Contract request ID is required' 
+      });
+    }
+
+    const paymentRequestsCollection = db.collection('paymentRequests');
+    
+    // Find payment request by contract request ID
+    const paymentRequest = await paymentRequestsCollection.findOne({ 
+      contractRequestId: contractRequestId 
+    });
+
+    if (!paymentRequest) {
+      return res.status(404).json({ 
+        error: 'Payment request not found for the given contract ID' 
+      });
+    }
+
+    // Format the response
+    const formattedRequest = {
+      id: paymentRequest._id.toString(),
+      upiId: paymentRequest.upiId,
+      amount: paymentRequest.amount,
+      payeeName: paymentRequest.payeeName,
+      note: paymentRequest.note,
+      contractRequestId: paymentRequest.contractRequestId,
+      walletAddress: paymentRequest.walletAddress,
+      daiAmount: paymentRequest.daiAmount,
+      ethFee: paymentRequest.ethFee,
+      requesterId: paymentRequest.requesterId,
+      status: paymentRequest.status,
+      createdAt: paymentRequest.createdAt
+    };
+
+    res.json({
+      message: 'Payment request retrieved successfully',
+      paymentRequest: formattedRequest
+    });
+
+  } catch (error) {
+    console.error('Get payment request by contract ID error:', error);
     res.status(500).json({ 
       error: 'Internal server error' 
     });
