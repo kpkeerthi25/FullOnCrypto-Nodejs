@@ -2,31 +2,37 @@ const express = require('express');
 const { MongoClient } = require('mongodb');
 const cors = require('cors');
 const { ethers } = require('ethers');
-require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 // MongoDB configuration
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const DB_NAME = process.env.DB_NAME || 'fulloncrypto';
 
 let db;
+let client;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB
-MongoClient.connect(MONGODB_URI)
-  .then(client => {
+// Connect to MongoDB (for serverless, we'll connect on demand)
+async function connectToDatabase() {
+  if (db) {
+    return db;
+  }
+  
+  try {
+    client = new MongoClient(MONGODB_URI);
+    await client.connect();
     console.log('Connected to MongoDB');
     db = client.db(DB_NAME);
-  })
-  .catch(error => {
+    return db;
+  } catch (error) {
     console.error('MongoDB connection error:', error);
-    process.exit(1);
-  });
+    throw error;
+  }
+}
 
 // Routes
 app.get('/', (req, res) => {
@@ -39,18 +45,30 @@ app.get('/api/test', (req, res) => {
 });
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    message: 'FullOnCrypto API Server is running',
-    timestamp: new Date(),
-    mongodb: db ? 'connected' : 'disconnected'
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    await connectToDatabase();
+    res.json({ 
+      status: 'healthy', 
+      message: 'FullOnCrypto API Server is running',
+      timestamp: new Date(),
+      mongodb: 'connected'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'unhealthy', 
+      message: 'Database connection failed',
+      timestamp: new Date(),
+      mongodb: 'disconnected',
+      error: error.message
+    });
+  }
 });
 
 // Signup API
 app.post('/api/signup', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { username, password } = req.body;
 
     // Validation
@@ -66,7 +84,7 @@ app.post('/api/signup', async (req, res) => {
       });
     }
 
-    const usersCollection = db.collection('users');
+    const usersCollection = database.collection('users');
 
     // Check if username already exists
     const existingUser = await usersCollection.findOne({ username });
@@ -108,6 +126,7 @@ app.post('/api/signup', async (req, res) => {
 // Login API 
 app.post('/api/login', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -116,7 +135,7 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    const usersCollection = db.collection('users');
+    const usersCollection = database.collection('users');
     const user = await usersCollection.findOne({ username });
 
     if (!user || user.password !== password) {
@@ -147,6 +166,7 @@ app.post('/api/login', async (req, res) => {
 // Payment Request API
 app.post('/api/payment-request', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { upiId, amount, payeeName, note, contractRequestId, walletAddress, daiAmount, ethFee } = req.body;
 
     // Validation
@@ -162,8 +182,8 @@ app.post('/api/payment-request', async (req, res) => {
       });
     }
 
-    const paymentRequestsCollection = db.collection('paymentRequests');
-    const upiIndexCollection = db.collection('upiIndex'); // New collection for contract ID to UPI ID mapping
+    const paymentRequestsCollection = database.collection('paymentRequests');
+    const upiIndexCollection = database.collection('upiIndex'); // New collection for contract ID to UPI ID mapping
 
     // Create payment request document
     const newPaymentRequest = {
@@ -230,6 +250,7 @@ app.post('/api/payment-request', async (req, res) => {
 // Get UPI ID by contract ID API (optimized with index)
 app.get('/api/upi-id/contract/:contractRequestId', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { contractRequestId } = req.params;
 
     if (!contractRequestId) {
@@ -238,7 +259,7 @@ app.get('/api/upi-id/contract/:contractRequestId', async (req, res) => {
       });
     }
 
-    const upiIndexCollection = db.collection('upiIndex');
+    const upiIndexCollection = database.collection('upiIndex');
     
     // Find UPI ID by contract request ID using the optimized index
     const upiIndexEntry = await upiIndexCollection.findOne({ 
@@ -270,6 +291,7 @@ app.get('/api/upi-id/contract/:contractRequestId', async (req, res) => {
 // Get payment request by contract ID API
 app.get('/api/payment-request/contract/:contractRequestId', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { contractRequestId } = req.params;
 
     if (!contractRequestId) {
@@ -278,7 +300,7 @@ app.get('/api/payment-request/contract/:contractRequestId', async (req, res) => 
       });
     }
 
-    const paymentRequestsCollection = db.collection('paymentRequests');
+    const paymentRequestsCollection = database.collection('paymentRequests');
     
     // Find payment request by contract request ID
     const paymentRequest = await paymentRequestsCollection.findOne({ 
@@ -323,7 +345,8 @@ app.get('/api/payment-request/contract/:contractRequestId', async (req, res) => 
 // Get all payment requests API
 app.get('/api/payment-requests', async (req, res) => {
   try {
-    const paymentRequestsCollection = db.collection('paymentRequests');
+    const database = await connectToDatabase();
+    const paymentRequestsCollection = database.collection('paymentRequests');
     
     // Get all pending payment requests, sorted by creation date (newest first)
     const paymentRequests = await paymentRequestsCollection
@@ -359,6 +382,7 @@ app.get('/api/payment-requests', async (req, res) => {
 // Update user wallet address API
 app.post('/api/update-wallet', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { ethAddress, username } = req.body;
     console.log('Update wallet request:', { ethAddress, username });
 
@@ -382,7 +406,7 @@ app.post('/api/update-wallet', async (req, res) => {
       });
     }
 
-    const usersCollection = db.collection('users');
+    const usersCollection = database.collection('users');
     
     // Check if this specific address is already used by another user
     const existingWallet = await usersCollection.findOne({ 
@@ -457,6 +481,7 @@ function verifySignature(message, signature, expectedAddress) {
 app.post('/api/login-wallet', async (req, res) => {
   console.log('Wallet login request received:', req.body);
   try {
+    const database = await connectToDatabase();
     const { ethAddress, signature } = req.body;
 
     // Validation
@@ -473,7 +498,7 @@ app.post('/api/login-wallet', async (req, res) => {
       });
     }
 
-    const usersCollection = db.collection('users');
+    const usersCollection = database.collection('users');
 
     // Find user by ETH address
     console.log('Looking for user with ETH address:', ethAddress.toLowerCase());
@@ -520,6 +545,7 @@ app.post('/api/login-wallet', async (req, res) => {
 // Register with wallet API
 app.post('/api/register-wallet', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { ethAddress, signature, username } = req.body;
 
     // Validation
@@ -542,7 +568,7 @@ app.post('/api/register-wallet', async (req, res) => {
       });
     }
 
-    const usersCollection = db.collection('users');
+    const usersCollection = database.collection('users');
 
     // Check if username already exists
     const existingUsername = await usersCollection.findOne({ username });
@@ -598,7 +624,13 @@ app.post('/api/register-wallet', async (req, res) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+// Export the app for Vercel
+module.exports = app;
+
+// For local development
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
